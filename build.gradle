@@ -1,0 +1,95 @@
+plugins {
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	mavenCentral()
+}
+
+// 第二个开发客户端，用来联调「别的玩家提到我」这条链路。
+// 用法：./gradlew runClient2
+loom {
+	runs {
+		client2 {
+			client()
+			configName = "Minecraft Client 2"
+			runDir = "run2"
+			programArgs "--username", "Tester2"
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// 单元测试只覆盖纯逻辑（匹配规则、文本处理、请求体 JSON、配置），
+	// 不加载 Minecraft，所以用普通的 JUnit 依赖即可。
+	testImplementation platform("org.junit:junit-bom:5.11.4")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+	testLogging {
+		events "passed", "failed", "skipped"
+		exceptionFormat "full"
+	}
+}
+
+processResources {
+	def props = [
+			version          : project.version.toString(),
+			minecraft_version: project.minecraft_version.toString()
+	]
+	inputs.properties props
+	// 不能用 expand：Groovy 的模板引擎会把 JSON 里的 \n 转义序列还原成真实换行，
+	// 产出的 fabric.mod.json 就成了非法 JSON。这里改为逐行做纯文本替换。
+	filesMatching("fabric.mod.json") {
+		filter { line ->
+			line.replace('${version}', props.version)
+					.replace('${minecraft_version}', props.minecraft_version)
+		}
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+	it.options.encoding = "UTF-8"
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+	from("LICENSE") {
+		rename { "${it}_$projectName" }
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = project.archives_base_name
+			from components.java
+		}
+	}
+	repositories {
+	}
+}

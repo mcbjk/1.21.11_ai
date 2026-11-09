@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "aidialog",
+	"version": "${version}",
+	"name": "AI 自动对话 (AI Auto Chat)",
+	"description": "AI 自动对话模组：自动识别聊天栏里提到你游戏账号 ID 的玩家，并调用 AI 大模型自动回复。\n支持 OpenAI / DeepSeek / Kimi / 智谱 GLM / 通义千问 / 硅基流动 / Gemini / Claude / Ollama 本地模型，也可完全自定义接口。\n快捷键可在「选项 → 控制 → 按键绑定」中修改。\n\n模组创作者：_mcbjk_",
+	"authors": [
+		"_mcbjk_"
+	],
+	"contact": {
+		"homepage": "https://github.com/_mcbjk_",
+		"sources": "https://github.com/_mcbjk_"
+	},
+	"license": "MIT",
+	"icon": "assets/aidialog/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.mcbjk.aidialog.AiDialogMod"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~${minecraft_version}",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
