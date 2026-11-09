@@ -11,6 +11,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.MultiLineEditBox;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
@@ -29,7 +30,6 @@ public class AiDialogScreen extends Screen {
 	private static final int ACCENT = 0xFF55FF55;
 	private static final int LABEL = 0xFF9A9A9A;
 	private static final int WHITE = 0xFFE8E8E8;
-	private static final int SUBTLE = 0xFF7A7A7A;
 	private static final int ROW = 28;
 
 	private final Screen parent;
@@ -93,8 +93,9 @@ public class AiDialogScreen extends Screen {
 			onClose();
 		}).bounds(left + contentWidth - 78, bottom, 78, 20).build());
 
-		scroll = 0;
+		// 布局完成后按内容高度夹一次，并恢复重建前的滚动位置。
 		setScroll(Math.min(savedScroll, maxScroll()));
+		AiDialogMod.LOGGER.info("[GUI布局] {}{}", debugLayout(), debugWidgets());
 	}
 
 	private void switchTab(int index) {
@@ -117,16 +118,11 @@ public class AiDialogScreen extends Screen {
 
 	private void setScroll(int value) {
 		scroll = Math.max(0, Math.min(value, maxScroll()));
-		int viewHeight = contentBottom - contentTop;
 		for (int i = 0; i < scrolledWidgets.size(); i++) {
-			AbstractWidget widget = scrolledWidgets.get(i);
-			int y = contentTop + widgetBaseY.get(i) - scroll;
-			widget.setY(y);
-			// 只有完全落在可视区内的控件才渲染：这样既不会画到页签栏上，
-			// 也不需要在外层套 scissor（scissor 会把页签一起裁掉）。
-			boolean fits = y >= contentTop && y + widget.getHeight() <= contentBottom;
-			boolean largerThanView = widget.getHeight() > viewHeight;
-			widget.visible = fits || (largerThanView && y + widget.getHeight() > contentTop && y < contentBottom);
+			// 只需挪位置。裁剪交给 render 里的 scissor：
+			// AbstractWidget.render 会自己按 scissor 判定 isHovered，
+			// 因此滚出可视区的控件既不会被画出来，也不会保留高亮。
+			scrolledWidgets.get(i).setY(contentTop + widgetBaseY.get(i) - scroll);
 		}
 	}
 
@@ -139,6 +135,39 @@ public class AiDialogScreen extends Screen {
 
 	private void addLabel(String text, int baseY, String hint) {
 		labels.add(new Label(text, left, baseY, contentWidth, hint));
+	}
+
+	/** 诊断：把当前页的布局尺寸打到日志，用于确认控件是否落在可视区内。 */
+	public String debugLayout() {
+		int contentBottomY = 0;
+		for (int i = 0; i < scrolledWidgets.size(); i++) {
+			contentBottomY = Math.max(contentBottomY, widgetBaseY.get(i) + scrolledWidgets.get(i).getHeight());
+		}
+		for (Label label : labels) {
+			contentBottomY = Math.max(contentBottomY, label.baseY() + 9);
+		}
+		return "tab=" + tab
+				+ " screen=" + this.width + "x" + this.height
+				+ " view=" + (contentBottom - contentTop)
+				+ " contentHeight=" + contentBottomY
+				+ " maxScroll=" + maxScroll()
+				+ " widgets=" + scrolledWidgets.size()
+				+ " labels=" + labels.size()
+				+ " systemPrompt.len=" + (config.systemPrompt == null ? -1 : config.systemPrompt.length());
+	}
+
+	/** 诊断：列出每个控件的类型、基准 Y 与高度，确认有没有控件被挤出可视区。 */
+	private String debugWidgets() {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < scrolledWidgets.size(); i++) {
+			net.minecraft.client.gui.components.AbstractWidget w = scrolledWidgets.get(i);
+			sb.append('\n').append("    #").append(i).append(' ')
+					.append(w.getClass().getSimpleName())
+					.append(" baseY=").append(widgetBaseY.get(i))
+					.append(" h=").append(w.getHeight())
+					.append(" bottom=").append(widgetBaseY.get(i) + w.getHeight());
+		}
+		return sb.toString();
 	}
 
 	// ------------------------------------------------------------------ 通用控件
@@ -179,10 +208,24 @@ public class AiDialogScreen extends Screen {
 			ModConfig.save();
 			rebuildWidgets();
 		});
+		list.ensureSelectedVisible();
 		addScrolled(list, y);
 		addLabel("厂商预设（左键选择 / 右键上一个；选中后字段仍可手改）", 0,
 				"也可以选最下面的「自定义接口」接任意 OpenAI 兼容服务，例如自建 one-api、vLLM、LM Studio。");
 		y += 132 + 14;
+
+		// 当前厂商：显示选中项，也让用户不滚回列表就能确认自己选了什么。
+		addLabel("当前厂商", y, "改下面的接口地址或模型会自动切成「自定义接口」。");
+		y += 11;
+		OptionButton presetCycle = OptionButton.cycle(left, contentTop, contentWidth,
+				Component.literal("当前厂商"), presetNames(),
+				() -> config.preset().displayName(), name -> {
+					config.applyPreset(ProviderPreset.byName(reversePresetName(name)));
+					ModConfig.save();
+					rebuildWidgets();
+				});
+		addScrolled(presetCycle, y);
+		y += 24;
 
 		y = textRow(y, "接口地址 Base URL", config.baseUrl,
 				"例如 https://api.deepseek.com/v1", v -> {
@@ -228,8 +271,27 @@ public class AiDialogScreen extends Screen {
 		addLabel("", y, "会用当前配置真实调用一次接口。");
 	}
 
-	// ------------------------------------------------------------------ 触发页
+	/** 所有厂商的显示名，给「当前厂商」循环控件用。 */
+	private static String[] presetNames() {
+		ProviderPreset[] values = ProviderPreset.values();
+		String[] names = new String[values.length];
+		for (int i = 0; i < values.length; i++) {
+			names[i] = values[i].displayName();
+		}
+		return names;
+	}
 
+	/** 从显示名反查枚举名（ProviderPreset.byName 接受的是枚举名而非显示名）。 */
+	private static String reversePresetName(String displayName) {
+		for (ProviderPreset preset : ProviderPreset.values()) {
+			if (preset.displayName().equals(displayName)) {
+				return preset.name();
+			}
+		}
+		return ProviderPreset.CUSTOM.name();
+	}
+
+	// ------------------------------------------------------------------ 触发页
 	private void buildTriggerTab() {
 		int y = 4;
 
@@ -332,17 +394,20 @@ public class AiDialogScreen extends Screen {
 		String statusText = (config.enabled ? "§a● 运行中" : "§c● 已暂停") + "§7  |  账号 §f" + AutoChatHandler.selfName();
 		graphics.drawString(this.font, statusText, left + contentWidth - this.font.width(statusText), top - 11, WHITE, false);
 
+		// 内容区整体裁剪。滚出可视区的控件会被裁掉，
+		// 且 AbstractWidget.render 会据此判定 isHovered，不会留下高亮。
+		// scissor 只包住内容区，页签栏和底部按钮在外面，不受影响。
+		graphics.enableScissor(left - 8, contentTop - 1, left + contentWidth + 8, contentBottom + 1);
+
 		for (Label label : labels) {
 			if (label.text().isEmpty()) {
 				continue;
 			}
-			int y = contentTop + label.baseY() - scroll;
-			if (y + 9 < contentTop || y > contentBottom) {
-				continue;
-			}
-			graphics.drawString(this.font, label.text(), label.x(), y, LABEL, false);
+			graphics.drawString(this.font, label.text(), label.x(),
+					contentTop + label.baseY() - scroll, LABEL, false);
 		}
 		super.render(graphics, mouseX, mouseY, partialTick);
+		graphics.disableScissor();
 
 		renderScrollbar(graphics);
 		renderHint(graphics, mouseX, mouseY);
@@ -391,11 +456,40 @@ public class AiDialogScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-		if (mouseY >= contentTop && mouseY <= contentBottom) {
+		// 必须先让原版把滚轮事件分发给鼠标下方的子控件。
+		// 原版 ContainerEventHandler.mouseScrolled 只会把事件交给 getChildAt() 找到的
+		// 那一个控件：若它消费了（返回 true），事件就到此为止，外层页面不该再滚；
+		// 若它没消费（例如落在普通输入框上），才轮到页面滚动。
+		// 之前这里无条件先滚动页面并返回 true，导致厂商列表永远收不到滚轮。
+		if (super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)) {
+			return true;
+		}
+		if (isOverContent(mouseX, mouseY) && scrollY != 0) {
 			setScroll(scroll - (int) Math.signum(scrollY) * 22);
 			return true;
 		}
-		return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+		return false;
+	}
+
+	/** 鼠标是否落在可滚动的内容区里（把页签栏和底部按钮排除在外）。 */
+	private boolean isOverContent(double mouseX, double mouseY) {
+		return mouseX >= left && mouseX <= left + contentWidth
+				&& mouseY >= contentTop && mouseY <= contentBottom;
+	}
+
+	/**
+	 * 覆盖子控件命中判定：被滚出内容区的控件不该再接收点击与滚轮。
+	 * 原版 AbstractWidget.isMouseOver / getChildAt 都不检查 scissor，
+	 * 而 setScroll 只是把控件挪出可视区，它们仍会命中并吞掉事件，
+	 * 结果就是鼠标停在某个被滚走的输入框上时，页面再也滚不动。
+	 */
+	@Override
+	public java.util.Optional<GuiEventListener> getChildAt(double mouseX, double mouseY) {
+		java.util.Optional<GuiEventListener> found = super.getChildAt(mouseX, mouseY);
+		if (found.isPresent() && scrolledWidgets.contains(found.get()) && !isOverContent(mouseX, mouseY)) {
+			return java.util.Optional.empty();
+		}
+		return found;
 	}
 
 	@Override

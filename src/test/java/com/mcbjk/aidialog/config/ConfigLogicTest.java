@@ -5,10 +5,13 @@ import com.google.gson.GsonBuilder;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -87,6 +90,33 @@ class ConfigLogicTest {
 				assertFalse(preset.baseUrl().isBlank(), preset + " 缺少接口地址");
 				assertFalse(preset.defaultModel().isBlank(), preset + " 缺少默认模型");
 			}
+		}
+	}
+
+	@Test
+	@DisplayName("厂商显示名必须唯一：GUI 靠显示名反查枚举，重名会让选中项错位")
+	void presetDisplayNamesAreUnique() {
+		Set<String> seen = new HashSet<>();
+		for (ProviderPreset preset : ProviderPreset.values()) {
+			assertTrue(seen.add(preset.displayName()),
+					"显示名重复：" + preset.displayName() + "（" + preset + "）");
+		}
+	}
+
+	@Test
+	@DisplayName("显示名 → 枚举 → 显示名 往返一致（GUI「当前厂商」控件依赖这一点）")
+	void displayNameRoundTrip() {
+		for (ProviderPreset preset : ProviderPreset.values()) {
+			// 模拟 GUI 里的 reversePresetName + byName 流程
+			String enumName = null;
+			for (ProviderPreset candidate : ProviderPreset.values()) {
+				if (candidate.displayName().equals(preset.displayName())) {
+					enumName = candidate.name();
+					break;
+				}
+			}
+			assertNotNull(enumName, "找不到 " + preset + " 的显示名");
+			assertEquals(preset, ProviderPreset.byName(enumName));
 		}
 	}
 
