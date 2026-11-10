@@ -95,7 +95,6 @@ public class AiDialogScreen extends Screen {
 
 		// 布局完成后按内容高度夹一次，并恢复重建前的滚动位置。
 		setScroll(Math.min(savedScroll, maxScroll()));
-		AiDialogMod.LOGGER.info("[GUI布局] {}{}", debugLayout(), debugWidgets());
 	}
 
 	private void switchTab(int index) {
@@ -103,17 +102,19 @@ public class AiDialogScreen extends Screen {
 		rebuildWidgets();
 	}
 
+	/**
+	 * 还能往下滚多少像素。
+	 * 算式在 {@link ScrollMath} 里，那里有单元测试守着坐标基准不要混用。
+	 */
 	private int maxScroll() {
-		int contentBottomY = 0;
+		int contentHeight = 0;
 		for (int i = 0; i < scrolledWidgets.size(); i++) {
-			int h = scrolledWidgets.get(i).getHeight();
-			contentBottomY = Math.max(contentBottomY, widgetBaseY.get(i) + h);
+			contentHeight = Math.max(contentHeight, widgetBaseY.get(i) + scrolledWidgets.get(i).getHeight());
 		}
 		for (Label label : labels) {
-			contentBottomY = Math.max(contentBottomY, label.baseY() + 9);
+			contentHeight = Math.max(contentHeight, label.baseY() + 9);
 		}
-		int visible = contentBottom - contentTop;
-		return Math.max(0, contentBottomY - contentTop - visible);
+		return ScrollMath.maxScroll(contentHeight, contentBottom - contentTop);
 	}
 
 	private void setScroll(int value) {
@@ -126,48 +127,24 @@ public class AiDialogScreen extends Screen {
 		}
 	}
 
+	/**
+	 * 注册一个随内容滚动的控件。
+	 * <p>
+	 * 这里刻意用 {@code addWidget} 而不是 {@code addRenderableWidget}：
+	 * 后者会把控件加进屏幕的 renderables 列表，而 {@code super.render()} 会把它
+	 * 连同页签栏、底部按钮一起在同一个绘制批次里画出来——页签和底部按钮并不在
+	 * 滚动区里，一旦外面套了 scissor 就会被一并裁掉（早先版本就是这样把页签裁没的）。
+	 * 用 addWidget 只登记事件与旁白，绘制则由本类在 scissor 内自行调用。
+	 */
 	private <T extends AbstractWidget> T addScrolled(T widget, int baseY) {
 		scrolledWidgets.add(widget);
 		widgetBaseY.add(baseY);
-		addRenderableWidget(widget);
+		addWidget(widget);
 		return widget;
 	}
 
 	private void addLabel(String text, int baseY, String hint) {
 		labels.add(new Label(text, left, baseY, contentWidth, hint));
-	}
-
-	/** 诊断：把当前页的布局尺寸打到日志，用于确认控件是否落在可视区内。 */
-	public String debugLayout() {
-		int contentBottomY = 0;
-		for (int i = 0; i < scrolledWidgets.size(); i++) {
-			contentBottomY = Math.max(contentBottomY, widgetBaseY.get(i) + scrolledWidgets.get(i).getHeight());
-		}
-		for (Label label : labels) {
-			contentBottomY = Math.max(contentBottomY, label.baseY() + 9);
-		}
-		return "tab=" + tab
-				+ " screen=" + this.width + "x" + this.height
-				+ " view=" + (contentBottom - contentTop)
-				+ " contentHeight=" + contentBottomY
-				+ " maxScroll=" + maxScroll()
-				+ " widgets=" + scrolledWidgets.size()
-				+ " labels=" + labels.size()
-				+ " systemPrompt.len=" + (config.systemPrompt == null ? -1 : config.systemPrompt.length());
-	}
-
-	/** 诊断：列出每个控件的类型、基准 Y 与高度，确认有没有控件被挤出可视区。 */
-	private String debugWidgets() {
-		StringBuilder sb = new StringBuilder();
-		for (int i = 0; i < scrolledWidgets.size(); i++) {
-			net.minecraft.client.gui.components.AbstractWidget w = scrolledWidgets.get(i);
-			sb.append('\n').append("    #").append(i).append(' ')
-					.append(w.getClass().getSimpleName())
-					.append(" baseY=").append(widgetBaseY.get(i))
-					.append(" h=").append(w.getHeight())
-					.append(" bottom=").append(widgetBaseY.get(i) + w.getHeight());
-		}
-		return sb.toString();
 	}
 
 	// ------------------------------------------------------------------ 通用控件
@@ -394,9 +371,8 @@ public class AiDialogScreen extends Screen {
 		String statusText = (config.enabled ? "§a● 运行中" : "§c● 已暂停") + "§7  |  账号 §f" + AutoChatHandler.selfName();
 		graphics.drawString(this.font, statusText, left + contentWidth - this.font.width(statusText), top - 11, WHITE, false);
 
-		// 内容区整体裁剪。滚出可视区的控件会被裁掉，
-		// 且 AbstractWidget.render 会据此判定 isHovered，不会留下高亮。
-		// scissor 只包住内容区，页签栏和底部按钮在外面，不受影响。
+		// 内容区裁剪：滚动控件在这里手动绘制，超出的部分会被裁掉。
+		// 页签栏与底部按钮走 super.render()（在 scissor 之外），不受影响。
 		graphics.enableScissor(left - 8, contentTop - 1, left + contentWidth + 8, contentBottom + 1);
 
 		for (Label label : labels) {
@@ -406,8 +382,13 @@ public class AiDialogScreen extends Screen {
 			graphics.drawString(this.font, label.text(), label.x(),
 					contentTop + label.baseY() - scroll, LABEL, false);
 		}
-		super.render(graphics, mouseX, mouseY, partialTick);
+		for (AbstractWidget widget : scrolledWidgets) {
+			widget.render(graphics, mouseX, mouseY, partialTick);
+		}
 		graphics.disableScissor();
+
+		// 页签栏与底部按钮：不在滚动区内，正常渲染
+		super.render(graphics, mouseX, mouseY, partialTick);
 
 		renderScrollbar(graphics);
 		renderHint(graphics, mouseX, mouseY);
